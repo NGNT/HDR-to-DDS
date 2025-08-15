@@ -1,8 +1,9 @@
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-import subprocess
 import os
 import shutil
+import subprocess
+import sys
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk, ImageDraw
 
 # Theme Colors
@@ -136,10 +137,10 @@ class SkyboxConverter(tk.Tk):
             ("Output Number", "--outputNum", "1", "How many different output files to create. Usually 1.", None),
             ("Output Name", "--output0", "", "Base name for the output file (without extension).", None),
             ("File Format", None, ".dds", "Output will be saved in DDS format.", None),  # Static label
-            ("Color Format", "--colorFormat", "bgra8", "Color quality. Higher values = better quality but larger files.", ["bgr8", "bgra8", "rgba16", "rgba16f", "rgba32f"]),
+            ("Color Format", "--colorFormat", "rgba32f", "Color quality. Higher values = better quality but larger files.", ["bgr8", "bgra8", "rgba16", "rgba16f", "rgba32f"]),
             ("Map Type", "--mapType", "cubemap", "How to map the texture. 'Cubemap' is standard for skyboxes.", ["cubemap", "latlong", "octahedral"]),
-            ("Source Face Size", "--srcFaceSize", "1024", "Resolution of input faces (pixels). Higher = more detail.", None),
-            ("Output Face Size", "--dstFaceSize", "1024", "Resolution of output faces (pixels). Higher = better quality.", None),
+            ("Source Face Size", "--srcFaceSize", "1024", "Resolution of input faces (pixels). Higher = more detail.", ["256", "512", "768", "1024", "1536", "2048"]),
+            ("Output Face Size", "--dstFaceSize", "1024", "Resolution of output faces (pixels). Higher = better quality.", ["256", "512", "768", "1024", "1536", "2048"]),
         ], row=0, column=3)  # Specify row and column
 
         # Debugging Output Box
@@ -267,7 +268,13 @@ class SkyboxConverter(tk.Tk):
             'deviceType': 'gpu',
             'generateMipChain': 'false',
             'outputNum': '1',
-            'output0params': 'dds,rgba32f,cubemap'
+            'colorFormat': 'bgra8',
+            'mapType': 'cubemap',
+            'inputGammaNumerator': '1.0',
+            'inputGammaDenominator': '1.0',
+            'outputGammaNumerator': '1.0',
+            'outputGammaDenominator': '1.0',
+            'output0params': 'dds,bgra8,cubemap'  # This will be overridden by the constructed params
         }
         
         # Update with values from UI controls if they exist
@@ -275,6 +282,8 @@ class SkyboxConverter(tk.Tk):
             if hasattr(self, param):
                 value = getattr(self, param)
                 if hasattr(value, 'get'):  # For StringVar and similar
+                    params[param] = value.get()
+                elif hasattr(value, 'get', ) and callable(getattr(value, 'get', None)):  # For Spinbox
                     params[param] = value.get()
                 else:  # For direct values
                     params[param] = value
@@ -308,36 +317,52 @@ class SkyboxConverter(tk.Tk):
         log_debug(f"Does cmft.exe exist? {os.path.exists(cmft_path)}")
         log_debug(f"Does input file exist? {os.path.exists(hdr_path)}")
 
-        # Get face sizes from GUI or use defaults
-        src_face_size = params.get('srcFaceSize', '1024')
-        dst_face_size = params.get('dstFaceSize', '1024')
-        
-        # Build the command with values from GUI
+        # Build the command with values from the params dictionary
         cmd = [
             cmft_path,
-            '--input', os.path.abspath(hdr_path),
-            '--filter', 'radiance',
-            '--srcFaceSize', str(src_face_size),
-            '--excludeBase', 'true',
-            '--mipCount', '11',  # Note: The actual execution shows mipCount=11, not 20
-            '--glossScale', '15',
-            '--glossBias', '2',
-            '--lightingModel', 'phong',  # Note: The actual execution shows lightingModel=phong
-            '--edgeFixup', 'none',
-            '--dstFaceSize', str(dst_face_size),
-            '--numCpuProcessingThreads', '6',
-            '--useOpenCL', 'true',
-            '--clVendor', 'anyGpuVendor',
-            '--deviceType', 'gpu',
-            '--inputGammaNumerator', '1.0',
-            '--inputGammaDenominator', '1.0',
-            '--outputGammaNumerator', '1.0',
-            '--outputGammaDenominator', '1.0',
-            '--generateMipChain', 'false',
-            '--outputNum', '1',
-            '--output0', output_path,
-            '--output0params', 'dds,rgba32f,cubemap'
+            '--input', os.path.abspath(hdr_path)
         ]
+        
+        # Add all parameters from params to the command
+        param_mapping = {
+            'filter': '--filter',
+            'srcFaceSize': '--srcFaceSize',
+            'excludeBase': '--excludeBase',
+            'mipCount': '--mipCount',
+            'glossScale': '--glossScale',
+            'glossBias': '--glossBias',
+            'lightingModel': '--lightingModel',
+            'edgeFixup': '--edgeFixup',
+            'dstFaceSize': '--dstFaceSize',
+            'numCpuProcessingThreads': '--numCpuProcessingThreads',
+            'useOpenCL': '--useOpenCL',
+            'clVendor': '--clVendor',
+            'deviceType': '--deviceType',
+            'generateMipChain': '--generateMipChain',
+            'outputNum': '--outputNum',
+            'colorFormat': '--colorFormat',
+            'mapType': '--mapType'
+        }
+        
+        # Add all parameters that have values
+        for param, flag in param_mapping.items():
+            if param in params:
+                cmd.extend([flag, str(params[param])])
+        
+        # Construct output0params based on selected format and map type
+        color_format = params.get('colorFormat', 'rgba32f')
+        map_type = params.get('mapType', 'cubemap')
+        output_params = f'dds,{color_format},{map_type}'
+        
+        # Add gamma and output parameters
+        cmd.extend([
+            '--inputGammaNumerator', str(params.get('inputGammaNumerator', '1.0')),
+            '--inputGammaDenominator', str(params.get('inputGammaDenominator', '1.0')),
+            '--outputGammaNumerator', str(params.get('outputGammaNumerator', '1.0')),
+            '--outputGammaDenominator', str(params.get('outputGammaDenominator', '1.0')),
+            '--output0', output_path,
+            '--output0params', output_params
+        ])
 
         # Debugging: Log the final command and parameters
         log_debug("=== Final Parameters ===")
